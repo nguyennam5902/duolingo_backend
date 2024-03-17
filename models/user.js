@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const { Schema, model } = mongoose;
-const { ObjectId } = Schema;
+const History = require('./history');
 
 const userSchema = new Schema(
   {
@@ -26,6 +26,24 @@ const userSchema = new Schema(
       default: 0,
     },
   },
+  {
+    methods: {
+      /**
+       * Get user's total score
+       * @returns {Promise<number>} 
+       */
+      async getTotalScore() {
+        const histories = await History.find({ userID: this._id }).exec();
+        var sum = 0;
+        for (let i = 0; i < histories.length; i++) {
+          const history = histories[i];
+          sum += history.point;
+        }
+        return sum;
+      }
+    }
+  },
+
   { timestamps: true }
 );
 

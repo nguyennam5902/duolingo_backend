@@ -3,7 +3,7 @@ const { ObjectId } = require('mongodb');
 const { Schema } = mongoose;
 const friendSchema = new Schema({
    userID: ObjectId,
-   follow_in: [ObjectId],
-   follow_out: [ObjectId]
+   following: [ObjectId],
+   followers: [ObjectId]
 });
 module.exports = mongoose.model("friend", friendSchema);

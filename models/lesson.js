@@ -6,11 +6,6 @@ const lessonSchema = new Schema({
    choice: [ObjectId],
    match: Object,
    sentence: [ObjectId],
-   fill: [ObjectId],
-   userScore: {
-      type: Number,
-      default: 0,
-   },
-});
+   fill: [ObjectId]});
 const Lesson = mongoose.model('lesson', lessonSchema);
 module.exports = Lesson;

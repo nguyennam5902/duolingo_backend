@@ -11,5 +11,6 @@ router.post("/register", authController.register);
 router.post("/login", authController.login);
 router.get("/logout", authController.logout);
 router.get("/current-user", middleware, authController.currentUser);
+router.post('/update-password', authController.updatePassword);
 
 module.exports = router;
