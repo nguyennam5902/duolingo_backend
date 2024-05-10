@@ -1,18 +1,23 @@
+const multer = require('multer');
 const db = require('./config/db');
 const route = require('./routes');
 const express = require("express");
 const cors = require('cors');
 const morgan = require('morgan');
 const cookieParser = require("cookie-parser");
-const csrf = require("csurf");
+const { GridFsStorage } = require('multer-gridfs-storage');
+const Grid = require('gridfs-stream');
+const path = require('path');
+const { ObjectId } = require("mongodb");
+
 const BaseResponse = require("./utils/baseResponse");
-const app = express();
 const session = require('express-session');
 const fs = require('fs');
 const User = require('./models/user');
-const multer = require('multer');
+const ChoiceQuestion = require('./models/choiceQuestion');
 const { Schema, default: mongoose } = require('mongoose');
 const Friend = require('./models/friend');
+const Listening = require('./models/listening');
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 const Image = mongoose.model('Image', new Schema({
@@ -26,15 +31,34 @@ const Image = mongoose.model('Image', new Schema({
 }));
 
 db.connect();
+const conn = mongoose.connection;
+let gfs, gridfsBucket;
+conn.once('open', () => {
+  gridfsBucket = new mongoose.mongo.GridFSBucket(conn.db, {
+    bucketName: 'uploads'
+  });
+  gfs = Grid(conn.db, mongoose.mongo);
+  gfs.collection('uploads');
+})
+// const audioStorage = new GridFsStorage({
+//   url: 'mongodb://127.0.0.1:27017/duolingo',
+//   file: (req, file) => {
+//     return {
+//       bucketName: 'uploads',
+//       filename: file.originalname
+//     };
+//   }
+// });
+// const audioUpload = multer({ audioStorage });
 
+const app = express();
+
+app.disable('etag')
 app.use(cors());
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "500mb" })); // limiting the request body size to 500MB
 app.use(cookieParser());
 app.use(morgan("dev"));
-
 app.use(morgan('combined'));
-app.use(express.json());
-
 app.use(session({
   secret: 'sJuVEoVwZajx8UoKyjCxXCkwQRFxvncxPJSVUsnUldiBlen8Ig',
   resave: false,
@@ -50,6 +74,344 @@ route(app);
 app.get('/', (req, res) => {
   res.send(BaseResponse.ofSucceed(null));
 });
+const Reading = mongoose.model('reading', new mongoose.Schema({
+  text: String,
+  questions: [{ type: ObjectId, ref: 'choice_question' }]
+}))
+const ReadingAnswer = mongoose.model('reading_answer', new mongoose.Schema({
+  userID: { type: ObjectId, ref: 'user' },
+  readingID: [{ type: ObjectId, ref: 'reading' }],
+  choices: Array,
+  score: { type: Number, default: -1 }
+}, { timestamps: true }))
+const ListeningAnswer = mongoose.model('listening_answer', new mongoose.Schema({
+  userID: { type: ObjectId, ref: 'user' },
+  listeningID: { type: ObjectId, ref: 'listening' },
+  choices: Array,
+  score: { type: Number, default: -1 }
+}, { timestamps: true }))
+const Task = mongoose.model('Task', new mongoose.Schema({
+  type: Number,
+  text: String
+}))
+const TaskAnswer = mongoose.model('task_answer', new mongoose.Schema({
+  taskID: { type: ObjectId, ref: 'Task' },
+  userID: { type: ObjectId, ref: "User" },
+  answer: String,
+  score: { type: Number, default: -1 }
+}, { timestamps: true }))
+const Speaking = mongoose.model('Speaking', new mongoose.Schema({
+  part: Number,
+  text: String
+}))
+
+const SpeakingAnswer = mongoose.model('speaking_answers', new mongoose.Schema({
+  speakingID: [{ type: ObjectId, ref: 'Speaking' }],
+  userID: { type: ObjectId, ref: "User" },
+  audioData: Buffer,
+  score: { type: Number, default: -1 }
+}, { timestamps: true }))
+
+const TestAnswer = mongoose.model('test_answers', new mongoose.Schema({
+  listeningAnswerID: { type: ObjectId, ref: 'listening_answer' },
+  readingAnswerID: { type: ObjectId, ref: 'reading_answer' },
+  taskAnswerID: [{ type: ObjectId, ref: 'task_answer' }],
+  speakingAnswerID: { type: ObjectId, ref: 'speaking_answers' },
+  userID: { type: ObjectId, ref: 'User' },
+}, { timestamps: true }))
+
+app.post('/api/test', async (req, res) => {
+  const test = new TestAnswer({
+    listeningAnswerID: req.body.listeningAnswerID,
+    readingAnswerID: req.body.readingAnswerID,
+    taskAnswerID: req.body.taskAnswerID,
+    speakingAnswerID: req.body.speakingAnswerID,
+    userID: req.body.userID
+  })
+  await test.save()
+  res.send({ data: test._id })
+})
+
+app.get('/api/scoring/listening/:id', async (req, res) => {
+  const id = req.params.id;
+  try {
+    const listeningAnswer = await ListeningAnswer.findById(id).populate(['listeningID']).select('-_id -__v').lean(true).exec()
+    if (listeningAnswer != null) {
+      listeningAnswer.listeningID.fileID = (await gfs.files.findOne({ _id: listeningAnswer.listeningID.fileID })).filename
+    }
+    // console.log(listeningAnswer.score);
+    res.send({
+      data: listeningAnswer
+    })
+  } catch (e) {
+    res.send({ data: {} })
+  }
+})
+
+app.get('/api/scoring/reading/:id', async (req, res) => {
+  const id = req.params.id;
+  try {
+    const readingAnswer = await ReadingAnswer.findById(id).select('-__v').populate(['readingID'])
+    // console.log(readingAnswer);
+    res.send({
+      data: readingAnswer
+    })
+  } catch (e) {
+    res.send({ data: {} })
+  }
+})
+
+app.get('/api/scoring/writing/:id', async (req, res) => {
+  const id = req.params.id;
+  try {
+    const taskAnswer = await TaskAnswer.findById(id).select('-__v').populate(['taskID'])
+    res.send({
+      data: taskAnswer
+    })
+  } catch (e) {
+    res.send({ data: {} })
+  }
+})
+
+app.post('/api/scoring/writing/', async (req, res) => {
+  const id = req.body.id;
+  const score = req.body.score;
+  try {
+    const taskAnswer = await TaskAnswer.findById(id)
+    taskAnswer.score = score;
+    taskAnswer.save()
+    res.send({
+      data: taskAnswer._id
+    })
+  } catch (e) {
+    res.send({ data: {} })
+  }
+})
+
+app.get('/api/scoring/speaking/:id', async (req, res) => {
+  const id = req.params.id;
+  try {
+    const speakingAnswer = await SpeakingAnswer.findById(id).select('-__v -audioData').populate(['speakingID'])
+    res.send({
+      data: speakingAnswer
+    })
+  } catch (e) {
+    res.send({ data: {} })
+  }
+})
+
+app.post('/api/scoring/speaking/', async (req, res) => {
+  const id = req.body.id;
+  const score = req.body.score;
+  try {
+    const speakingAnswer = await SpeakingAnswer.findById(id)
+    speakingAnswer.score = score
+    speakingAnswer.save()
+    res.send({
+      data: speakingAnswer._id
+    })
+  } catch (e) {
+    res.send({ data: {} })
+  }
+})
+
+app.get('/api/scoring/student/:id', async (req, res) => {
+  if (String(req.params.id).length != 8) {
+    return res.send({
+      data: {}
+    })
+  }
+  const id = String(req.params.id).slice(-6);
+  const emailRegex = new RegExp(`${id}@sis.hust.edu.vn$`, 'i');
+  const user = await User.findOne({ email: emailRegex }).exec();
+  const result = {}
+  // console.log(user);
+  if (user) {
+    const listeningAnswer = await ListeningAnswer.find({ userID: user._id }).populate(['listeningID'])
+      .select('-__v').sort({ createdAt: -1 }).lean(true);
+    for (let i = 0; i < listeningAnswer.length; i++) {
+      let item = listeningAnswer[i];
+      item.listeningID.fileID = (await gfs.files.findOne({ _id: item.listeningID.fileID })).filename
+    }
+    result.l = listeningAnswer
+    const readingAnswer = await ReadingAnswer.find({ userID: user._id }).select('-__v').populate(['readingID'])
+      .sort({ createdAt: -1 })
+    result.r = readingAnswer
+
+    const taskAnswer = await TaskAnswer.find({ userID: user._id }).select('-__v').populate(['taskID']).sort({ createdAt: -1 })
+    result.w = taskAnswer
+    const speakingAnswer = await SpeakingAnswer.find({ userID: user._id }).select('-__v -audioData').populate(['speakingID'])
+      .sort({ createdAt: -1 });
+    result.s = speakingAnswer
+  } else {
+    result.l = [];
+    result.r = [];
+    result.w = [];
+    result.s = [];
+  }
+  res.send({
+    data: result
+  })
+})
+
+app.get('/api/speaking/', async (req, res) => {
+  try {
+    const result = []
+    for (let i = 1; i < 4; i++) {
+      let tmp = await Speaking.aggregate([{ $match: { part: i } }, { $sample: { size: 1 } }]).exec();
+      // console.log(tmp);
+      result.push(tmp[0]);
+    }
+    res.send(result);
+  } catch (err) {
+    console.log(err);
+    res.send('ERROR');
+  }
+})
+
+app.post('/api/speaking/upload/', async (req, res) => {
+  const ids = req.body.parts;
+  const buffer = Buffer.from(req.body.file.data)
+  const answer = new SpeakingAnswer({
+    speakingID: ids.map(id => new mongoose.Types.ObjectId(id)),
+    userID: new mongoose.Types.ObjectId(req.body.userID),
+    audioData: buffer
+  })
+  answer.save()
+  res.send({ data: answer._id });
+})
+
+app.get('/api/speaking/answers/:id', async (req, res) => {
+  try {
+    const audioData = await SpeakingAnswer.findById(req.params.id).exec();
+    if (!audioData) {
+      return res.status(404).send('Audio not found');
+    }
+
+    const audioBuffer = audioData.audioData;
+    const fileSize = audioBuffer.length;
+
+    const range = req.headers.range
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+      const chunksize = (end - start) + 1;
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': 'audio/wav'
+      });
+
+      res.end(audioBuffer.slice(start, end + 1), 'binary');
+      console.log(`START:${start},END:${end},SIZE:${fileSize}`);
+    } else {
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': 'audio/wav'
+      });
+      res.end(audioBuffer, 'binary');
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+
+app.get('/api/tasks', async (req, res) => {
+  const t0 = await Task.aggregate([{ $match: { type: 1 } }, { $sample: { size: 1 } }]).exec();
+  const t1 = await Task.aggregate([{ $match: { type: 2 } }, { $sample: { size: 1 } }]).exec();
+  res.send({
+    data: [t0[0], t1[0]]
+  })
+})
+
+app.post('/api/task/submit', async (req, res) => {
+  const body = req.body;
+  const taskID = body.taskID;
+  const userID = body.userID;
+  const content = body.content;
+  const newAnswer = new TaskAnswer({
+    taskID,
+    userID,
+    answer: content
+  });
+  await newAnswer.save()
+  res.send({ data: newAnswer._id });
+})
+
+app.get('/api/reading/', async (req, res) => {
+  const readingsUp = await Reading.aggregate([{ $sample: { size: 4 } }]).exec();
+  const readingsDown = await Reading.populate(readingsUp, { path: "questions" })
+  res.send({
+    data: readingsDown
+  })
+})
+
+app.get('/api/choice-questions/:id', async (req, res) => {
+  const q = await ChoiceQuestion.findById(req.params.id).select('-_id -__v').lean()
+  res.send({ data: q })
+})
+
+app.post('/api/reading/submit', async (req, res) => {
+  const readingIDs = req.body.readingIDs;
+  const userID = req.body.userID;
+  const choices = req.body.choices;
+  const score = req.body.score;
+  const readingAnswer = new ReadingAnswer({
+    userID: userID,
+    readingID: [...readingIDs].map(id => new mongoose.Types.ObjectId(id)),
+    choices: choices,
+    score: score
+  })
+  await readingAnswer.save()
+  res.send({
+    data: readingAnswer._id
+  });
+})
+
+app.get('/api/listen/', async (req, res) => {
+  const doc = (await Listening.aggregate([{ $sample: { size: 1 } }]).exec());
+  const docPopulated = await Listening.populate(doc, { path: 'questions' });
+  const file = await gfs.files.findOne({ _id: docPopulated[0].fileID });
+  res.send({
+    filename: file.filename,
+    data: docPopulated[0]
+  })
+})
+
+app.post(`/api/listen/submit/`, async (req, res) => {
+  const listeningID = req.body.listeningID;
+  const userID = req.body.userID;
+  const choices = req.body.choices;
+  const score = req.body.score;
+  const listeningAnswer = new ListeningAnswer({
+    userID: userID,
+    listeningID: listeningID,
+    choices: choices,
+    score: score
+  })
+  await listeningAnswer.save();
+  res.send({
+    data: listeningAnswer._id
+  })
+})
+
+app.get('/api/audio/:filename', async (req, res) => {
+  try {
+    const file = await gfs.files.findOne({ filename: req.params.filename });
+    const readStream = gridfsBucket.openDownloadStream(file._id);
+    res.type('audio/mpeg')
+    readStream.pipe(res);
+  } catch (error) {
+    console.log(error);
+    res.send("ERROR");
+  }
+});
 
 app.get('/api/user/progress/:userID/:courseID', require('./routes/api/progress'));
 app.get('/api/user/:userID/', async (req, res) => {
@@ -61,11 +423,9 @@ app.get('/api/user/:userID/', async (req, res) => {
     } else {
       var sum = await user.getTotalScore();
       const userFriend = await Friend.findOne({ userID: user._id }).exec();
-      console.log(userFriend);
       const followingData = []
       for (let i = 0; i < userFriend?.following.length ?? 0; i++) {
         const tmp = await User.findById(userFriend.following[i]).select('-password').exec();
-        console.log(i, userFriend.following[i]);
         followingData.push({
           _id: tmp._id,
           name: tmp.name,
@@ -119,7 +479,6 @@ app.post('/api/follow/', async (req, res) => {
     const friendID = req.body.friendID;
     const userFriend = await Friend.findOne({ userID: new mongoose.Types.ObjectId(userID) }).exec();
     const friendFriend = await Friend.findOne({ userID: new mongoose.Types.ObjectId(friendID) }).exec();
-    console.log("USER:", userFriend?._id, "\nFRIEND: ", friendFriend?._id);
     if (!userFriend) {
       const newFriend = new Friend({
         userID: userID,
@@ -157,9 +516,6 @@ app.delete('/api/follow/', async (req, res) => {
   try {
     const userID = req.body.userID;
     const friendID = req.body.friendID;
-    console.log(userID);
-    // console.log(friendID);
-    console.log(req.body);
     const userFriend = await Friend.findOne({ userID: new mongoose.Types.ObjectId(userID) }).exec();
     const friendFriend = await Friend.findOne({ userID: new mongoose.Types.ObjectId(friendID) }).exec();
     if (userFriend) {
@@ -176,7 +532,6 @@ app.delete('/api/follow/', async (req, res) => {
           { $pull: { followers: userID } },
           { new: true },
         ).catch((e) => console.error('Error: ', e));
-        console.log(userFriend.following);
       }
     }
     res.send(BaseResponse.ofSucceed(null));
@@ -188,7 +543,6 @@ app.delete('/api/follow/', async (req, res) => {
 
 app.post('/api/upload', upload.single('image'), async (req, res) => {
   try {
-    // const imagePath = req.file.path;
     const userID = req.body.userID;
     // Update the user document with the image path
     const image = await Image.findOne({ userID: userID }).exec();
