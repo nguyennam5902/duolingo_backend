@@ -11,7 +11,7 @@ const path = require('path');
 const { ObjectId } = require("mongodb");
 
 const BaseResponse = require("./utils/baseResponse");
-const session = require('express-session');
+const session = require('cookie-session');
 const fs = require('fs');
 const User = require('./models/user');
 const ChoiceQuestion = require('./models/choiceQuestion');
