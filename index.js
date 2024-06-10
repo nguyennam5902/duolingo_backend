@@ -132,6 +132,55 @@ app.post('/api/test', async (req, res) => {
   res.send({ data: test._id })
 })
 
+app.get('/api/test/search/:userID', async (req, res) => {
+  const userID = req.params.userID
+  try {
+    const tests = await TestAnswer.find({ userID: userID }).select('_id createdAt').sort({ createdAt: -1 })
+    res.send({
+      data: tests
+    })
+  } catch (err) {
+    console.log("ERROR:", err)
+    res.send({ data: [] })
+  }
+})
+
+app.get('/api/view-test/:id', async (req, res) => {
+  const id = req.params.id
+  try {
+    const test = await TestAnswer.findById(id).populate(['listeningAnswerID', 'readingAnswerID', 'taskAnswerID', 'speakingAnswerID']).select('-__v').lean(true)
+    if (test == null) {
+      return res.send({ data: {} })
+    }
+    test.listeningAnswerID.listeningID = await Listening.findById(test.listeningAnswerID.listeningID).select('-__v').lean(true)
+    test.listeningAnswerID.listeningID.fileID = (await gfs.files.findOne({ _id: test.listeningAnswerID.listeningID.fileID })).filename
+    const questions = test.listeningAnswerID.listeningID.questions.map(id => id.toString())
+    for (let i = 0; i < questions.length; i++) {
+      questions[i] = await ChoiceQuestion.findById(questions[i]).select('-_id -__v').lean(true)
+    }
+    test.listeningAnswerID.listeningID.questions = questions
+
+    for (let i = 0; i < test.readingAnswerID.readingID.length; i++) {
+      const id = test.readingAnswerID.readingID[i]
+      test.readingAnswerID.readingID[i] = await Reading.findById(id).populate(['questions']).select('-_id -__v')
+    }
+
+    for (let i = 0; i < test.taskAnswerID.length; i++) {
+      test.taskAnswerID[i].taskID = await Task.findById(test.taskAnswerID[i].taskID).select('-_id -__v').lean(true)
+    }
+
+    test.speakingAnswerID.audioData = null
+    for (let i = 0; i < test.speakingAnswerID.speakingID.length; i++) {
+      test.speakingAnswerID.speakingID[i] = await Speaking.findById(test.speakingAnswerID.speakingID[i]).select('-_id -__v').lean(true)
+    }
+
+    res.send({ data: test })
+  } catch (err) {
+    console.log("ERROR:", err)
+    res.send({ data: {}, error: err.toString() })
+  }
+})
+
 app.get('/api/scoring/listening/:id', async (req, res) => {
   const id = req.params.id;
   try {
@@ -231,7 +280,7 @@ app.get('/api/scoring/student/:id', async (req, res) => {
       .select('-__v').sort({ createdAt: -1 }).lean(true);
     for (let i = 0; i < listeningAnswer.length; i++) {
       let item = listeningAnswer[i];
-      item.listeningID.fileID = (await gfs.files.findOne({ _id: item.listeningID.fileID })).filename
+      item.listeningID.filename = (await gfs.files.findOne({ _id: item.listeningID.fileID })).filename
     }
     result.l = listeningAnswer
     const readingAnswer = await ReadingAnswer.find({ userID: user._id }).select('-__v').populate(['readingID'])
