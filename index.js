@@ -11,7 +11,7 @@ const path = require('path');
 const { ObjectId } = require("mongodb");
 
 const BaseResponse = require("./utils/baseResponse");
-const session = require('express-session');
+const session = require('cookie-session');
 const fs = require('fs');
 const User = require('./models/user');
 const ChoiceQuestion = require('./models/choiceQuestion');
@@ -79,13 +79,11 @@ const Reading = mongoose.model('reading', new mongoose.Schema({
   questions: [{ type: ObjectId, ref: 'choice_question' }]
 }))
 const ReadingAnswer = mongoose.model('reading_answer', new mongoose.Schema({
-  userID: { type: ObjectId, ref: 'user' },
   readingID: [{ type: ObjectId, ref: 'reading' }],
   choices: Array,
   score: { type: Number, default: -1 }
 }, { timestamps: true }))
 const ListeningAnswer = mongoose.model('listening_answer', new mongoose.Schema({
-  userID: { type: ObjectId, ref: 'user' },
   listeningID: { type: ObjectId, ref: 'listening' },
   choices: Array,
   score: { type: Number, default: -1 }
@@ -96,7 +94,6 @@ const Task = mongoose.model('Task', new mongoose.Schema({
 }))
 const TaskAnswer = mongoose.model('task_answer', new mongoose.Schema({
   taskID: { type: ObjectId, ref: 'Task' },
-  userID: { type: ObjectId, ref: "User" },
   answer: String,
   score: { type: Number, default: -1 }
 }, { timestamps: true }))
@@ -107,7 +104,6 @@ const Speaking = mongoose.model('Speaking', new mongoose.Schema({
 
 const SpeakingAnswer = mongoose.model('speaking_answers', new mongoose.Schema({
   speakingID: [{ type: ObjectId, ref: 'Speaking' }],
-  userID: { type: ObjectId, ref: "User" },
   audioData: Buffer,
   score: { type: Number, default: -1 }
 }, { timestamps: true }))
@@ -130,6 +126,55 @@ app.post('/api/test', async (req, res) => {
   })
   await test.save()
   res.send({ data: test._id })
+})
+
+app.get('/api/test/search/:userID', async (req, res) => {
+  const userID = req.params.userID
+  try {
+    const tests = await TestAnswer.find({ userID: userID }).select('_id createdAt').sort({ createdAt: -1 })
+    res.send({
+      data: tests
+    })
+  } catch (err) {
+    console.log("ERROR:", err)
+    res.send({ data: [] })
+  }
+})
+
+app.get('/api/view-test/:id', async (req, res) => {
+  const id = req.params.id
+  try {
+    const test = await TestAnswer.findById(id).populate(['listeningAnswerID', 'readingAnswerID', 'taskAnswerID', 'speakingAnswerID']).select('-__v').lean(true)
+    if (test == null) {
+      return res.send({ data: {} })
+    }
+    test.listeningAnswerID.listeningID = await Listening.findById(test.listeningAnswerID.listeningID).select('-__v').lean(true)
+    test.listeningAnswerID.listeningID.fileID = (await gfs.files.findOne({ _id: test.listeningAnswerID.listeningID.fileID })).filename
+    const questions = test.listeningAnswerID.listeningID.questions.map(id => id.toString())
+    for (let i = 0; i < questions.length; i++) {
+      questions[i] = await ChoiceQuestion.findById(questions[i]).select('-_id -__v').lean(true)
+    }
+    test.listeningAnswerID.listeningID.questions = questions
+
+    for (let i = 0; i < test.readingAnswerID.readingID.length; i++) {
+      const id = test.readingAnswerID.readingID[i]
+      test.readingAnswerID.readingID[i] = await Reading.findById(id).populate(['questions']).select('-_id -__v')
+    }
+
+    for (let i = 0; i < test.taskAnswerID.length; i++) {
+      test.taskAnswerID[i].taskID = await Task.findById(test.taskAnswerID[i].taskID).select('-_id -__v').lean(true)
+    }
+
+    test.speakingAnswerID.audioData = null
+    for (let i = 0; i < test.speakingAnswerID.speakingID.length; i++) {
+      test.speakingAnswerID.speakingID[i] = await Speaking.findById(test.speakingAnswerID.speakingID[i]).select('-_id -__v').lean(true)
+    }
+
+    res.send({ data: test })
+  } catch (err) {
+    console.log("ERROR:", err)
+    res.send({ data: {}, error: err.toString() })
+  }
 })
 
 app.get('/api/scoring/listening/:id', async (req, res) => {
@@ -225,30 +270,32 @@ app.get('/api/scoring/student/:id', async (req, res) => {
   const emailRegex = new RegExp(`${id}@sis.hust.edu.vn$`, 'i');
   const user = await User.findOne({ email: emailRegex }).exec();
   const result = {}
-  // console.log(user);
+  const l = [], r = [], w = [], s = []
   if (user) {
-    const listeningAnswer = await ListeningAnswer.find({ userID: user._id }).populate(['listeningID'])
-      .select('-__v').sort({ createdAt: -1 }).lean(true);
-    for (let i = 0; i < listeningAnswer.length; i++) {
-      let item = listeningAnswer[i];
-      item.listeningID.fileID = (await gfs.files.findOne({ _id: item.listeningID.fileID })).filename
-    }
-    result.l = listeningAnswer
-    const readingAnswer = await ReadingAnswer.find({ userID: user._id }).select('-__v').populate(['readingID'])
-      .sort({ createdAt: -1 })
-    result.r = readingAnswer
+    const testAnswers = await TestAnswer.find({ userID: user._id }).exec()
+    for (let i = 0; i < testAnswers.length; i++) {
+      let listeningAnswer = await ListeningAnswer.findById(testAnswers[i].listeningAnswerID).populate(['listeningID'])
+        .select('-__v').sort({ createdAt: -1 }).lean(true)
+      listeningAnswer.listeningID.filename = (await gfs.files.findOne({ _id: listeningAnswer.listeningID.fileID })).filename
+      console.log(listeningAnswer);
+      l.push(listeningAnswer)
 
-    const taskAnswer = await TaskAnswer.find({ userID: user._id }).select('-__v').populate(['taskID']).sort({ createdAt: -1 })
-    result.w = taskAnswer
-    const speakingAnswer = await SpeakingAnswer.find({ userID: user._id }).select('-__v -audioData').populate(['speakingID'])
-      .sort({ createdAt: -1 });
-    result.s = speakingAnswer
-  } else {
-    result.l = [];
-    result.r = [];
-    result.w = [];
-    result.s = [];
+      let readingAnswer = await ReadingAnswer.findById(testAnswers[i].readingAnswerID).select('-__v').populate(['readingID'])
+      r.push(readingAnswer)
+
+      for (let j = 0; j < testAnswers[i].taskAnswerID.length; j++) {
+        let writingAnswer = await TaskAnswer.findById(testAnswers[i].taskAnswerID[j]).select('-__v').populate(['taskID'])
+        w.push(writingAnswer)
+      }
+
+      const speakingAnswer = await SpeakingAnswer.findById(testAnswers[i].speakingAnswerID).select('-__v -audioData').populate(['speakingID'])
+      s.push(speakingAnswer)
+    }
   }
+  result.l = l
+  result.r = r
+  result.w = w
+  result.s = s
   res.send({
     data: result
   })
