@@ -1,3 +1,4 @@
+const { getGFS } = require("../config/db")
 const ChoiceQuestion = require("../models/choiceQuestion")
 const Listening = require("../models/listening")
 const Reading = require("../models/reading")
