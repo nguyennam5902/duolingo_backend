@@ -4,6 +4,6 @@ const router = express.Router();
 
 router.get('/', controller.speaking)
 router.post('/upload', controller.upload)
-router.get('/answers/:id', controller.answer)
+router.get('/answers/:filename', controller.answer)
 
 module.exports = router

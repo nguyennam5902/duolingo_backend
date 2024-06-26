@@ -4,7 +4,7 @@ const Grid = require('gridfs-stream');
 const mongoUrl = `mongodb+srv://W6EIwZwSAhN7vi0Y:W6EIwZwSAhN7vi0Y@duolingo.jolnnpg.mongodb.net/duolingo`
 // const mongoUrl = `mongodb://127.0.0.1:27017/duolingo`
 
-let gfs = null, gridfsBucket = null;
+let gfs = null, audioGFS = null, gridfsBucket = null, audioBucket = null
 const conn = mongoose.connection;
 
 const getGFS = () => {
@@ -14,6 +14,14 @@ const getGFS = () => {
         gfs.collection('uploads');
     }
     return gfs;
+}
+const getAudioGFS = () => {
+    if (audioGFS == null) {
+        console.log("1st audio gfs");
+        audioGFS = Grid(conn.db, mongoose.mongo);
+        audioGFS.collection('audio');
+    }
+    return audioGFS;
 }
 
 const getBucket = () => {
@@ -25,6 +33,17 @@ const getBucket = () => {
     }
     return gridfsBucket;
 }
+
+const getAudioBucket = () => {
+    if (audioBucket == null) {
+        console.log("1st audio bucket");
+        audioBucket = new mongoose.mongo.GridFSBucket(conn.db, {
+            bucketName: 'audio'
+        });
+    }
+    return audioBucket;
+}
+
 async function connect() {
     try {
         await mongoose.connect(mongoUrl);
@@ -35,4 +54,4 @@ async function connect() {
 }
 
 
-module.exports = { connect, getBucket, getGFS };
+module.exports = { connect, getBucket, getGFS, getAudioBucket, getAudioGFS };
